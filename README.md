@@ -1,10 +1,6 @@
-# cdx
+# gocdx
 
-`cdx` is a CLI tool & Go package for parsing CDX files. CDX files are commonly used in web archiving to index the contents of WARC (Web ARChive) files. This package is maintained by the Internet Archive.
-
-## Original Author
-
-This project was originally created by [Corentin Barreau](https://github.com/CorentinB) at the Internet Archive.
+`gocdx` is a Go package for parsing CDX files. CDX files are commonly used in web archiving to index the contents of WARC (Web ARChive) files. This package is maintained by the Internet Archive.
 
 ## Installation
 
@@ -48,6 +44,10 @@ func main() {
 	}
 }
 ```
+
+## Original Author
+
+This project was originally created by [Corentin Barreau](https://github.com/CorentinB) at the Internet Archive.
 
 ## License
 This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
