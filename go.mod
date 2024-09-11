@@ -1,3 +1,3 @@
-module github.com/internetarchive/cdx
+module github.com/internetarchive/gocdx
 
-go 1.23
+go 1.23.1
