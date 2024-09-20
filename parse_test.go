@@ -1,4 +1,4 @@
-package cdx
+package gocdx
 
 import (
 	"bytes"

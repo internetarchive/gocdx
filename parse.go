@@ -1,4 +1,4 @@
-package cdx
+package gocdx
 
 import (
 	"bufio"
@@ -97,9 +97,11 @@ func parseRecord(line string, fi FieldIndex) (Record, error) {
 		case 'm':
 			record.MIMEType = value
 		case 's':
-			record.StatusCode, err = strconv.Atoi(value)
-			if err != nil {
-				return Record{}, fmt.Errorf("invalid status code: %w", err)
+			if value != "-" {
+				record.StatusCode, err = strconv.Atoi(value)
+				if err != nil {
+					return Record{}, fmt.Errorf("invalid status code: %w", err)
+				}
 			}
 		case 'k':
 			record.NewStyleChecksum = value
