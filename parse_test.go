@@ -169,7 +169,7 @@ com,example)/ 20230731193152 https://example.com/ text/html 200 K5UZWMOAOHAFAVNO
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reader := bytes.NewBufferString(tt.input)
-			got, err := Parse(reader)
+			got, err := Parse(reader, "")
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Parse() error = %v, wantErr %v", err, tt.wantErr)

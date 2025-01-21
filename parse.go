@@ -10,8 +10,13 @@ import (
 	"time"
 )
 
-func Parse(r io.Reader) ([]Record, error) {
+func Parse(r io.Reader, header string) ([]Record, error) {
+	const maxScanTokenSize = 1024 * 1024 // 1MB
+
 	scanner := bufio.NewScanner(r)
+	buf := make([]byte, maxScanTokenSize)
+	scanner.Buffer(buf, maxScanTokenSize)
+
 	var records []Record
 	var fieldIndex FieldIndex
 
@@ -21,9 +26,11 @@ func Parse(r io.Reader) ([]Record, error) {
 	}
 
 	// Parse the header line
-	header := scanner.Text()
 	if header == "" {
-		return nil, errors.New("empty header line in CDX file")
+		header = scanner.Text()
+		if header == "" {
+			return nil, errors.New("empty header line in CDX file")
+		}
 	}
 
 	var err error
