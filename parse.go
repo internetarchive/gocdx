@@ -41,7 +41,7 @@ func Parse(r io.Reader, header string) ([]Record, error) {
 
 	// Read and parse the data lines
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.Clone(scanner.Text()) // Force a copy to break buffer reference
 		record, err := parseRecord(line, fieldIndex)
 		if err != nil {
 			return nil, err // No need to wrap this error
