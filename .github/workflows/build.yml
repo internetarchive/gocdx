@@ -11,13 +11,13 @@ jobs:
     name: release linux/amd64
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
-    - uses: wangyoucao577/go-release-action@6ac7dba1f9e61850053324549cb6bc88e4b473d2 #release/rel-v1.51
+    - uses: actions/checkout@v4
+    - uses: wangyoucao577/go-release-action@481a2c1a0f1be199722e3e9b74d7199acafc30a8 #release/rel-v1.53
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         goos: linux
         goarch: amd64
-        goversion: 1.23.1
+        goversion: 'go.mod'
         compress_assets: OFF
         md5sum: FALSE
         sha256sum: TRUE
