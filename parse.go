@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+// Parse reads a CDX file from the provided reader and returns a slice of Record.
+// It expects the first line to be the header, which can be provided as an argument.
 func Parse(r io.Reader, header string) ([]Record, error) {
 	const maxScanTokenSize = 1024 * 1024 // 1MB
 
