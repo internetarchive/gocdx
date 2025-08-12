@@ -8,8 +8,7 @@ import (
 	"github.com/ImVexed/fasturl"
 )
 
-// IACanonicalize returns the canonicalized URL string per the IA-style rules
-// needed by your tests.
+// IACanonicalize returns the canonicalized URL string per the IA-style rules defined by surt tests.
 func IACanonicalize(raw string) (string, error) {
 	parsed, err := fasturl.ParseURL(raw)
 	if err != nil {
