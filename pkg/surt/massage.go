@@ -30,18 +30,14 @@ func Massage(url string, opts ...MassageOpts) (massagedURL string) {
 		}
 	}
 
-	// Keep certain non-hierarchical / special schemes exactly as-is.
 	if isOpaquePassThrough(pu.Protocol) {
 		return url
 	}
 
-	// Opaque schemes (mailto:), or custom like dns:, warcinfo:, filedesc: must be returned verbatim.
 	if isNonHierarchical(pu.Protocol) {
 		return url
 	}
 
-	// WHOIS behaves like a hierarchical scheme for these tests.
-	// For http/https/ftp/whois, produce SURT.
 	host := strings.ToLower(pu.Host)
 	if massageHost {
 		host, _ = strings.CutPrefix(host, "www.")
