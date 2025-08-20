@@ -72,6 +72,7 @@ func Generate(warcFile io.ReadCloser, header string) ([]*Record, error) {
 		parsedWARCRecord.Record.Content.Close() // Close the content to avoid memory leaks as we are not using it here
 
 		currentPosition += size
+		i++
 	}
 
 	// spew.Dump(warcRecords)
