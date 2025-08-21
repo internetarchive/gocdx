@@ -2,15 +2,19 @@ package gocdx
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha1"
 	"encoding/base32"
+	"fmt"
 	"io"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/internetarchive/gocdx/pkg/surt"
 	warc "github.com/internetarchive/gowarc"
+	"golang.org/x/sync/errgroup"
 )
 
 type overloadedWARCRecord struct {
@@ -18,124 +22,202 @@ type overloadedWARCRecord struct {
 
 	compByteOffset int64
 	compByteLength int64
-	httpMessage    string
-	httpHeaders    map[string]string
 	warcFileName   string
 }
 
-// Generate reads a WARC file from the provided reader and returns a slice of Record generated from the given WARC records.
+// contains helper
+func hasField(fields []string, want string) bool {
+	for _, f := range fields {
+		if f == want {
+			return true
+		}
+	}
+	return false
+}
+
+// Generate reads a WARC file from the provided reader and returns a slice of Record
+// generated from the given WARC response records. Reading from the WARC reader is
+// strictly single-threaded; record processing is concurrent.
 func Generate(warcFile io.ReadCloser, header string) ([]*Record, error) {
 	warcReader, err := warc.NewReader(warcFile)
 	if err != nil {
 		return nil, err
 	}
+	defer warcReader.Close()
 
-	var currentPosition int64
-	var warcFileName string
-	var i int
+	// Which fields are requested?
+	headerFields := strings.Fields(header)
+	needStatus := hasField(headerFields, "s") // requires parsing HTTP status line
+	needDigest := hasField(headerFields, "k") // may require reading full record content
 
-	var warcRecords []*overloadedWARCRecord
+	// ---- Stage 1: single-threaded collection (the only critical section) ----
+	var (
+		currentPosition int64
+		warcFileName    string
+		warcRecords     []*overloadedWARCRecord // only "response" records are collected
+	)
+
 	for {
-		warcRecord, size, err := warcReader.ReadRecord()
-		if err != nil {
-			return nil, err
-		}
-		if size == 0 {
-			// EOF reached, no more records
+		rec, size, err := warcReader.ReadRecord()
+		// Stop on EOF-like conditions used by some WARC readers
+		if size == 0 && err == nil {
 			break
 		}
-
-		if i == 0 && warcRecord.Header.Get("WARC-Filename") != "" {
-			warcFileName = warcRecord.Header.Get("WARC-Filename")
-		} else if i == 0 {
-			// If the first record does not have a WARC-Filename, this is an error that we want to soft-fail
-			warcFileName = "unknown.warc"
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// Best effort: close any content we already collected
+			for _, r := range warcRecords {
+				if r.Record != nil && r.Record.Content != nil {
+					_ = r.Record.Content.Close()
+				}
+			}
+			return nil, err
 		}
 
-		var httpMessage string
-		var httpHeaders map[string]string
-		if warcRecord.Header.Get("WARC-Type") == "response" {
-			httpMessage, httpHeaders = parseHTTPHeadersFromWARCRecord(warcRecord)
+		fmt.Printf("Read WARC record: %s\n", rec.Header.Get("WARC-Target-URI"))
+
+		switch rec.Header.Get("WARC-Type") {
+		case "warcinfo":
+			warcFileName = rec.Header.Get("WARC-Filename")
+			currentPosition += size
+		case "response":
+			// Keep Content open; workers will parse and then close it later.
+			warcRecords = append(warcRecords, &overloadedWARCRecord{
+				Record:         rec,
+				compByteOffset: currentPosition,
+				compByteLength: size,
+				warcFileName:   warcFileName,
+			})
+			currentPosition += size
+		default:
+			currentPosition += size
 		}
-		parsedWARCRecord := &overloadedWARCRecord{
-			Record:         warcRecord,
-			compByteOffset: currentPosition,
-			compByteLength: size,
-			httpMessage:    httpMessage,
-			httpHeaders:    httpHeaders,
-			warcFileName:   warcFileName,
-		}
-
-		// spew.Dump(parsedWARCRecord)
-
-		warcRecords = append(warcRecords, parsedWARCRecord)
-		parsedWARCRecord.Record.Content.Close() // Close the content to avoid memory leaks as we are not using it here
-
-		currentPosition += size
-		i++
 	}
 
-	// spew.Dump(warcRecords)
+	// Nothing to do?
+	if len(warcRecords) == 0 {
+		return []*Record{}, nil
+	}
 
-	headerFields := strings.FieldsSeq(header)
+	// ---- Stage 2: concurrent processing of collected response records ----
+	records := make([]*Record, len(warcRecords))
 
-	records := make([]*Record, 0)
-	for _, warcRecord := range warcRecords {
-		if warcRecord.Record.Header.Get("WARC-Type") != "response" {
-			// Only process records with WARC-Type "response"
-			continue
-		}
+	workers := runtime.GOMAXPROCS(0) // reasonable default; tune if needed
+	g, _ := errgroup.WithContext(context.Background())
 
-		record := &Record{}
-		for field := range headerFields {
-			switch field {
-			case "N":
-				record.MassagedURL = surt.Massage(warcRecord.Record.Header.Get("WARC-Target-URI"))
-			case "b":
-				parsedTime, err := time.Parse(time.RFC3339, warcRecord.Record.Header.Get("WARC-Date"))
-				if err != nil {
-					parsedTime = time.Time{}
-				}
-				record.Timestamp = parsedTime
-			case "a":
-				record.OriginalURL = warcRecord.Record.Header.Get("WARC-Target-URI")
-			case "m":
-				record.MIMEType = strings.TrimSuffix(warcRecord.Record.Header.Get("Content-Type"), "; msgtype=response")
-			case "s":
-				record.StatusCode = -1
+	// Work distribution: each worker pulls indexes from a channel
+	type job struct{ idx int }
+	jobs := make(chan job)
 
-				splittedHTTPMessage := strings.Split(warcRecord.httpMessage, " ")
-				if len(splittedHTTPMessage) >= 2 {
-					parsedStatusCode, err := strconv.Atoi(splittedHTTPMessage[1])
-					if err == nil {
-						record.StatusCode = parsedStatusCode
+	// Start workers
+	for w := 0; w < workers; w++ {
+		g.Go(func() error {
+			for j := range jobs {
+				wr := warcRecords[j.idx]
+				rec := &Record{}
+
+				// Build the record according to requested fields only.
+				for _, field := range headerFields {
+					switch field {
+					case "N":
+						rec.MassagedURL = surt.Massage(wr.Record.Header.Get("WARC-Target-URI"))
+
+					case "b":
+						parsedTime, err := time.Parse(time.RFC3339, wr.Record.Header.Get("WARC-Date"))
+						if err != nil {
+							parsedTime = time.Time{}
+						}
+						rec.Timestamp = parsedTime
+
+					case "a":
+						rec.OriginalURL = wr.Record.Header.Get("WARC-Target-URI")
+
+					case "m":
+						rec.MIMEType = strings.TrimSuffix(
+							wr.Record.Header.Get("Content-Type"),
+							"; msgtype=response",
+						)
+
+					case "s":
+						// Only parse HTTP status if requested
+						rec.StatusCode = -1
+						if needStatus {
+							httpMessage, _ := parseHTTPHeadersFromWARCRecord(wr.Record)
+							parts := strings.Split(httpMessage, " ")
+							if len(parts) >= 2 {
+								if sc, err := strconv.Atoi(parts[1]); err == nil {
+									rec.StatusCode = sc
+								}
+							}
+							// Reset content for any subsequent reads (e.g., digest)
+							if rs, ok := wr.Record.Content.(io.ReadSeeker); ok {
+								_, _ = rs.Seek(0, io.SeekStart)
+							}
+						}
+
+					case "k":
+						// Prefer the digest from header if present; otherwise compute it.
+						trimmed := strings.TrimPrefix(wr.Record.Header.Get("WARC-Block-Digest"), "sha1:")
+						if trimmed != wr.Record.Header.Get("WARC-Block-Digest") {
+							rec.NewStyleChecksum = trimmed
+						} else if needDigest {
+							hasher := sha1.New()
+							// Ensure we start from the beginning (status parsing may have read some bytes)
+							if rs, ok := wr.Record.Content.(io.ReadSeeker); ok {
+								_, _ = rs.Seek(0, io.SeekStart)
+							}
+							if _, err := io.Copy(hasher, wr.Record.Content); err != nil {
+								// Close before returning error
+								_ = wr.Record.Content.Close()
+								return err
+							}
+							rec.NewStyleChecksum = base32.StdEncoding.EncodeToString(hasher.Sum(nil))
+							// Reset again is not necessary since we'll close Content below
+						}
+
+					case "r":
+						// TODO: clarify; keep placeholder
+						rec.Redirect = "-"
+
+					case "M":
+						// TODO: ignore for now
+						rec.MetaTags = "-"
+
+					case "S":
+						rec.CompressedRecordSize = wr.compByteLength
+
+					case "V":
+						rec.CompressedArcOffset = wr.compByteOffset
+
+					case "g":
+						rec.Filename = wr.warcFileName
 					}
 				}
-			case "k":
-				trimmed := strings.TrimPrefix(warcRecord.Record.Header.Get("WARC-Block-Digest"), "sha1:")
-				if trimmed != warcRecord.Record.Header.Get("WARC-Block-Digest") {
-					record.NewStyleChecksum = trimmed
-				} else {
-					hasher := sha1.New()
-					warcRecord.Record.Content.Seek(0, 0)
-					io.Copy(hasher, warcRecord.Record.Content)
-					record.NewStyleChecksum = base32.StdEncoding.EncodeToString(hasher.Sum(nil))
+
+				// Release resources for this record
+				if wr.Record != nil && wr.Record.Content != nil {
+					_ = wr.Record.Content.Close()
 				}
-			case "r":
-				// TODO : clarify with whoever what to do with this field
-				record.Redirect = "-"
-			case "M":
-				// TODO : let's ignore this field for now
-				record.MetaTags = "-"
-			case "S":
-				record.CompressedRecordSize = warcRecord.compByteLength
-			case "V":
-				record.CompressedArcOffset = warcRecord.compByteOffset
-			case "g":
-				record.Filename = warcRecord.warcFileName
+
+				records[j.idx] = rec
 			}
+			return nil
+		})
+	}
+
+	// Feed jobs
+	go func() {
+		for i := range warcRecords {
+			jobs <- job{idx: i}
 		}
-		records = append(records, record)
+		close(jobs)
+	}()
+
+	// Wait for all workers
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
 	return records, nil
