@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/base32"
-	"fmt"
 	"io"
 	"runtime"
 	"strconv"
@@ -38,7 +37,7 @@ func hasField(fields []string, want string) bool {
 // Generate reads a WARC file from the provided reader and returns a slice of Record
 // generated from the given WARC response records. Reading from the WARC reader is
 // strictly single-threaded; record processing is concurrent.
-func Generate(warcFile io.ReadCloser, header string) ([]*Record, error) {
+func Generate(warcFile io.Reader, header string) ([]*Record, error) {
 	warcReader, err := warc.NewReader(warcFile)
 	if err != nil {
 		return nil, err
@@ -52,17 +51,12 @@ func Generate(warcFile io.ReadCloser, header string) ([]*Record, error) {
 
 	// ---- Stage 1: single-threaded collection (the only critical section) ----
 	var (
-		currentPosition int64
-		warcFileName    string
-		warcRecords     []*overloadedWARCRecord // only "response" records are collected
+		warcFileName string
+		warcRecords  []*overloadedWARCRecord // only "response" records are collected
 	)
 
 	for {
-		rec, size, err := warcReader.ReadRecord()
-		// Stop on EOF-like conditions used by some WARC readers
-		if size == 0 && err == nil {
-			break
-		}
+		rec, err := warcReader.ReadRecord()
 		if err == io.EOF {
 			break
 		}
@@ -76,23 +70,18 @@ func Generate(warcFile io.ReadCloser, header string) ([]*Record, error) {
 			return nil, err
 		}
 
-		fmt.Printf("Read WARC record: %s\n", rec.Header.Get("WARC-Target-URI"))
-
 		switch rec.Header.Get("WARC-Type") {
 		case "warcinfo":
 			warcFileName = rec.Header.Get("WARC-Filename")
-			currentPosition += size
 		case "response":
 			// Keep Content open; workers will parse and then close it later.
 			warcRecords = append(warcRecords, &overloadedWARCRecord{
 				Record:         rec,
-				compByteOffset: currentPosition,
-				compByteLength: size,
+				compByteOffset: rec.Offset,
+				compByteLength: rec.Size,
 				warcFileName:   warcFileName,
 			})
-			currentPosition += size
 		default:
-			currentPosition += size
 		}
 	}
 
@@ -252,6 +241,8 @@ func (r *Record) FormatCDX(header string) (string, error) {
 			result.WriteString(strconv.FormatInt(r.CompressedArcOffset, 10))
 		case "g":
 			result.WriteString(r.Filename)
+		case "CDX":
+			continue
 		}
 		result.WriteString(" ")
 	}
