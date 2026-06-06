@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+var errInvalidTimestamp = errors.New("invalid timestamp")
+
 func Parse(r io.Reader, header string) ([]Record, error) {
 	const maxScanTokenSize = 1024 * 1024 // 1MB
 
@@ -44,6 +46,10 @@ func Parse(r io.Reader, header string) ([]Record, error) {
 		line := strings.Clone(scanner.Text()) // Force a copy to break buffer reference
 		record, err := parseRecord(line, fieldIndex)
 		if err != nil {
+			// For now we are going to skip invalid timestamps.
+			if errors.Is(err, errInvalidTimestamp) {
+				continue
+			}
 			return nil, err // No need to wrap this error
 		}
 		records = append(records, record)
@@ -97,7 +103,7 @@ func parseRecord(line string, fi FieldIndex) (Record, error) {
 		case 'b':
 			record.Timestamp, err = time.Parse("20060102150405", value)
 			if err != nil {
-				return Record{}, fmt.Errorf("invalid timestamp: %w", err)
+				return Record{}, fmt.Errorf("%w: %v", errInvalidTimestamp, err)
 			}
 		case 'a':
 			record.OriginalURL = value

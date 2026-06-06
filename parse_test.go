@@ -129,13 +129,36 @@ com,example)/ 20230731193152
 			errMsg:   "insufficient fields in CDX record",
 		},
 		{
-			name: "Invalid timestamp",
+			name: "Invalid timestamp is ignored",
 			input: `CDX N b a m s k r M S V g
 com,example)/ INVALIDTIME https://example.com/ text/html 200 K5UZWMOAOHAFAVNO2QBMBBCMGAAC7K3J - - 1234 5678 example.warc.gz
 `,
 			expected: nil,
 			wantErr:  true,
-			errMsg:   "invalid timestamp: parsing time \"INVALIDTIME\" as \"20060102150405\": cannot parse",
+			errMsg:   "no records found in CDX file",
+		},
+		{
+			name: "Skip invalid timestamp and keep valid records",
+			input: `CDX N b a m s k r M S V g
+com,bad)/ INVALIDTIME https://bad.example/ text/html 200 K5UZWMOAOHAFAVNO2QBMBBCMGAAC7K3J - - 1234 5678 bad.warc.gz
+com,good)/ 20230731193152 https://good.example/ text/html 200 K5UZWMOAOHAFAVNO2QBMBBCMGAAC7K3J - - 1234 5678 good.warc.gz
+`,
+			expected: []Record{
+				{
+					MassagedURL:          "com,good)/",
+					Timestamp:            time.Date(2023, 7, 31, 19, 31, 52, 0, time.UTC),
+					OriginalURL:          "https://good.example/",
+					MIMEType:             "text/html",
+					StatusCode:           200,
+					NewStyleChecksum:     "K5UZWMOAOHAFAVNO2QBMBBCMGAAC7K3J",
+					Redirect:             "-",
+					MetaTags:             "-",
+					CompressedRecordSize: 1234,
+					CompressedArcOffset:  5678,
+					Filename:             "good.warc.gz",
+				},
+			},
+			wantErr: false,
 		},
 		{
 			name: "Invalid status code",
